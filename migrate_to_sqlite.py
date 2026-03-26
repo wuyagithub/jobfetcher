@@ -14,7 +14,7 @@ from pathlib import Path
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-JSON_PATH = Path(__file__).parent / "data" / "linkedin_jobs_20260325_new.json"
+JSON_PATH = Path(__file__).parent / "data" / "linkedin_jobs_20260326_new.json"
 DB_PATH = Path(__file__).parent / "data" / "jobs.db"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -230,7 +230,14 @@ ON CONFLICT(rowid) DO UPDATE SET
 def migrate():
     print(f"Reading: {JSON_PATH}")
     with open(JSON_PATH, encoding="utf-8") as f:
-        flat_jobs = json.load(f)
+        data = json.load(f)
+
+    # Handle both formats: list or dict with 'jobs' key
+    if isinstance(data, list):
+        flat_jobs = data
+    else:
+        flat_jobs = data.get("jobs", [])
+        print(f"  Metadata: {data.get('total_found', len(flat_jobs))} total scraped")
 
     print(f"Total jobs to migrate: {len(flat_jobs)}")
 
