@@ -1,125 +1,87 @@
-# JobFetcher - LinkedIn Civil/Environmental Engineering Internship Scraper
+# JobFetcher - LinkedIn 土木/环境工程职位爬虫
 
-Scrapes LinkedIn job listings for civil and environmental engineering internships in the United States using Playwright MCP (browser automation with authenticated session).
+使用 Playwright MCP（浏览器自动化 + 已登录会话）爬取 LinkedIn 上美国地区的土木工程和环境工程职位（包括全职和实习）。
 
-## Workflow
+## 搜索配置
+
+- **搜索关键词**：`civil engineering and environmental engineering jobs in the United States`
+- **搜索地区**：United States
+- **时间过滤**：最近 30 天内发布的职位（`f_TPR=r2592000`）
+
+## 工作流程
 
 ```
-python run_pipeline.py --step all        # Full pipeline (recommended)
-python run_pipeline.py --step scrape     # Step 1: scrape only
-python run_pipeline.py --step migrate    # Step 3: migrate JSON → SQLite
+python run_pipeline.py --step all        # 完整流水线（推荐）
+python run_pipeline.py --step scrape     # 仅步骤 1：爬取
+python run_pipeline.py --step migrate    # 仅步骤 3：JSON → SQLite
 
-# Inside --step all:
+# --step all 内部流程：
 ┌─────────────────────────────────────────────────────────────────┐
-│  STEP 1: Scrape (scrape_all_jobs.py)                            │
-│  - Uses Playwright MCP to browse LinkedIn search results         │
-│  - Search: "civil engineering and environmental engineering     │
-│    intern" in "United States" with f_TPR=r2592000 (past month) │
-│  - Extracts: title, company, location, URL, posted_date         │
-│    (real ISO date from JSON-LD datePosted field)               │
-│  - Handles pagination (22 pages, 25 jobs each)                  │
-│  - Deduplicates against SQLite DB + active JSON file           │
-│  - Output: data/linkedin_jobs_20260325_new.json                │
-│  - ✅ Auto-migrates to SQLite on completion                     │
+│  步骤 1：爬取职位 (scrape_all_jobs.py)                            │
+│  - 使用 Playwright MCP 访问 LinkedIn 搜索结果                    │
+│  - 搜索关键词："civil engineering and environmental engineering │
+│    jobs in the United States"，地区："United States"            │
+│  - 提取：职位名称、公司、地点、URL、发布日期                      │
+│    （从 JSON-LD datePosted 字段获取真实 ISO 日期）               │
+│  - 处理分页（最多 22 页，每页 25 个职位）                        │
+│  - 与 SQLite 数据库和当前 JSON 文件进行去重                      │
+│  - 输出：data/linkedin_jobs_YYYYMMDD_new.json                   │
+│  - ✅ 完成自动迁移到 SQLite                                      │
 └─────────────────────────────────────────────────────────────────┘
-                              ↓
+                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│  STEP 2: Fill JDs (MCP webfetch — manual or scripted)           │
-│  - Uses webfetch tool to pull JD text from LinkedIn job URLs   │
-│  - Parses "Job Description" / "About the job" section         │
-│  - Truncates at "Seniority level", "Similar jobs", "Referrals" │
-│  - Updates description field in JSON in-place                   │
-│  - Fallback: jd_fallback.py / jd_fallback2.py                  │
-│  - After all JDs filled: python jd_fetch.py --migrate         │
+│  步骤 2：补充职位描述 (MCP webfetch — 手动或脚本)                │
+│  - 使用 webfetch 工具从 LinkedIn 职位 URL 获取描述文本          │
+│  - 解析 "Job Description" / "About the job" 部分                │
+│  - 在 "Seniority level"、"Similar jobs"、"Referrals" 处截断     │
+│  -原地更新 JSON 中的 description 字段                           │
+│  - 备选方案：jd_fallback.py / jd_fallback2.py                   │
+│  - 所有描述补充完成后：python jd_fetch.py --migrate            │
 └─────────────────────────────────────────────────────────────────┘
-                              ↓ (after all JDs filled)
+                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│  STEP 3: Migrate to SQLite (migrate_to_sqlite.py)              │
-│  - Auto-runs after scrape_all_jobs.py completes                 │
-│  - Transforms flat JSON → structured SQLite schema              │
-│  - Auto-parses: city/state, employment_type, salary, dates     │
-│  - Creates FTS5 full-text search index                          │
-│  - Output: data/jobs.db (SQLite)                               │
-└─────────────────────────────────────────────────────────────────┘
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  STEP 1: Scrape all job listings (scrape_all_jobs.py)           │
-│  - Uses Playwright MCP to browse LinkedIn search results        │
-│  - Search: "civil engineering and environmental engineering     │
-│    intern" in "United States" with f_TPR=r2592000 (past month)│
-│  - Extracts: title, company, location, URL, posted_date         │
-│    (real ISO date from JSON-LD datePosted field)                │
-│  - Handles pagination (22 pages, 25 jobs each)                  │
-│  - Deduplicates by job ID                                        │
-│  - Output: data/linkedin_jobs_YYYYMMDD.json                     │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│  STEP 2: Fetch job descriptions (jd_fetch.py)                    │
-│  - Uses webfetch tool to pull JD text from LinkedIn job URLs   │
-│  - Parses "Job Description" / "About the job" section         │
-│  - Truncates at "Seniority level", "Similar jobs", "Referrals" │
-│  - Updates description field in JSON in-place                    │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓ (if blocked)
-┌─────────────────────────────────────────────────────────────────┐
-│  STEP 2b: Fallback (jd_fallback.py / jd_fallback2.py)           │
-│  - Attempt alternative parsing strategies                        │
-│  - Google site: search fallback (if webfetch is blocked)        │
-│  - Company careers page direct search                            │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│  STEP 3: Batch fill remaining JDs (update_jds*.py)              │
-│  - For each remaining pending job:                               │
-│    1. webfetch LinkedIn job URL directly                        │
-│    2. Parse JD text from response                               │
-│    3. Write update script with JD text                           │
-│    4. Run script to update JSON in-place                         │
-│  - Repeat until 0 pending                                       │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│  STEP 4: Migrate to SQLite (migrate_to_sqlite.py)               │
-│  - Transforms flat JSON → structured SQLite schema               │
-│  - Auto-parses: city/state, employment_type, salary, dates     │
-│    (handles both ISO dates and relative "X days ago" dates)   │
-│  - Creates FTS5 full-text search index                          │
-│  - Output: data/jobs.db (SQLite)                               │
+│  步骤 3：迁移到 SQLite (migrate_to_sqlite.py)                    │
+│  - scrape_all_jobs.py 完成后自动运行                            │
+│  - 将扁平 JSON 转换为结构化 SQLite 模式                          │
+│  - 自动解析：城市/州、职位类型、薪资、日期                        │
+│  - 创建 FTS5 全文搜索索引                                        │
+│  - 输出：data/jobs.db (SQLite)                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-## File Structure
+## 文件结构
 
 ```
 jobfetcher/
-├── README.md                  # This file
-├── requirements.txt           # Python dependencies
-├── pyproject.toml            # Project config
-├── run_pipeline.py           # ✅ Master orchestrator (use this!)
-├── scrape_all_jobs.py        # Step 1: LinkedIn scraper (Playwright MCP)
-├── jd_fetch.py               # Step 2: JD filler + auto-migrate
-├── jd_fallback.py            # Step 2b: Fallback JD strategies
-├── jd_fallback2.py           # Step 2b: Additional fallback strategies
-├── backfill_dates.py         # Backfill real posting dates from LinkedIn
-├── migrate_to_sqlite.py      # JSON → SQLite migration + FTS (auto-called)
-├── playwright_extractor.py   # Playwright browser utilities
-├── src/                      # Original jobfetcher package
+├── README.md                  # 本文件
+├── requirements.txt           # Python 依赖
+├── pyproject.toml            # 项目配置
+├── run_pipeline.py           # ✅ 主协调器（请使用此文件！）
+├── scrape_all_jobs.py        # 步骤 1：LinkedIn 爬虫 (Playwright MCP)
+├── jd_fetch.py               # 步骤 2：补充 JD + 自动迁移
+├── jd_fallback.py            # 步骤 2b：备选 JD 获取策略
+├── jd_fallback2.py           # 步骤 2b：额外备选策略
+├── backfill_dates.py         # 回填真实发布日期
+├── migrate_to_sqlite.py      # JSON → SQLite 迁移 + FTS（自动调用）
+├── playwright_extractor.py   # Playwright 浏览器工具
+├── hooks/                    # Git hooks
+│   └── post-commit           # 每次提交后自动推送到 GitHub
+├── src/                      # 原始 jobfetcher 包
 │   └── jobfetcher/
 │       ├── api/              # FastAPI REST API
-│       ├── cli/              # Command-line interface
-│       ├── models/           # Data models (JobListing, etc.)
-│       ├── scrapers/         # Platform scrapers (LinkedIn, etc.)
-│       └── storage/          # SQLite, JSON, CSV backends
+│       ├── cli/              # 命令行接口
+│       ├── models/           # 数据模型 (JobListing 等)
+│       ├── scrapers/         # 平台爬虫 (LinkedIn 等)
+│       └── storage/          # SQLite、JSON、CSV 后端
 └── data/
-    ├── jobs.db               # ✅ SQLite database (persistent storage)
-    └── linkedin_jobs_20260325_new.json  # JSON source (fed to SQLite)
+    ├── jobs.db               # ✅ SQLite 数据库（持久化存储）
+    └── linkedin_jobs_*.json  # JSON 源（导入 SQLite 用）
 ```
 
-## SQLite Database Schema
+## SQLite 数据库结构
 
 ```sql
--- Main table
+-- 主表
 CREATE TABLE jobs (
     id              TEXT PRIMARY KEY,
     source          TEXT NOT NULL DEFAULT 'linkedin',
@@ -129,24 +91,24 @@ CREATE TABLE jobs (
     company_url     TEXT,
     location_type   TEXT,         -- 'onsite', 'remote', 'hybrid'
     city            TEXT,
-    state           TEXT,         -- 2-letter state abbr, e.g. 'TX'
+    state           TEXT,         -- 2字母州缩写，如 'TX'
     country         TEXT DEFAULT 'US',
     postal_code     TEXT,
-    employment_type TEXT,         -- 'INTERNSHIP', 'FULL_TIME', etc.
+    employment_type TEXT,         -- 'INTERNSHIP', 'FULL_TIME' 等
     salary_currency TEXT,
     salary_min      REAL,
     salary_max      REAL,
-    salary_interval TEXT,        -- 'HOUR', 'YEAR', etc.
+    salary_interval TEXT,        -- 'HOUR', 'YEAR' 等
     description_text TEXT,
     description_html TEXT,
     requirements_json TEXT,
-    posted_date     TEXT,         -- ISO date string
+    posted_date     TEXT,         -- ISO 日期字符串
     expiry_date     TEXT,
     scraped_at      TEXT NOT NULL,
     created_at      TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
--- Indexes
+-- 索引
 CREATE INDEX idx_jobs_source      ON jobs(source);
 CREATE INDEX idx_jobs_title       ON jobs(job_title);
 CREATE INDEX idx_jobs_state        ON jobs(state);
@@ -154,28 +116,25 @@ CREATE INDEX idx_jobs_company      ON jobs(company_name);
 CREATE INDEX idx_jobs_posted_date  ON jobs(posted_date);
 CREATE INDEX idx_jobs_employment   ON jobs(employment_type);
 
--- Full-text search (FTS5)
+-- 全文搜索 (FTS5)
 CREATE VIRTUAL TABLE jobs_fts USING fts5(
     job_title, company_name, city, state, description_text,
     content='jobs', content_rowid='rowid'
 );
 ```
 
-## SQLite Usage Examples
+## SQLite 使用示例
 
 ```python
 import sqlite3
 
 conn = sqlite3.connect("data/jobs.db")
 
-# All jobs from WSP
-for row in conn.execute(
-    "SELECT job_title, city, state FROM jobs WHERE company_name = ?",
-    ("WSP in the U.S.",)
-):
-    print(row)
+# 查看所有职位
+for row in conn.execute("SELECT COUNT(*) FROM jobs"):
+    print(f"总职位数: {row[0]}")
 
-# Civil engineering internships in Texas
+# 德克萨斯州的土木工程实习生
 for row in conn.execute("""
     SELECT job_title, company_name, city
     FROM jobs
@@ -186,7 +145,7 @@ for row in conn.execute("""
 """):
     print(row)
 
-# Full-text search
+# 全文搜索
 for row in conn.execute("""
     SELECT job_title, company_name, city, snippet(jobs_fts, 4, '<b>', '</b>', '...', 20) as context
     FROM jobs_fts
@@ -197,53 +156,40 @@ for row in conn.execute("""
     print(f"{row[0]} @ {row[1]} ({row[2]})")
     print(f"  {row[3]}")
 
-# Salary range for internships
-for row in conn.execute("""
-    SELECT job_title, company_name, salary_min, salary_max, salary_interval
-    FROM jobs
-    WHERE salary_min IS NOT NULL AND employment_type = 'INTERNSHIP'
-    ORDER BY salary_min DESC
-    LIMIT 10
-"""):
-    print(row)
-
-# Stats
-print(conn.execute("SELECT COUNT(*) FROM jobs").fetchone())
+# 按公司统计职位数量
 print(conn.execute("SELECT company_name, COUNT(*) FROM jobs GROUP BY company_name ORDER BY COUNT(*) DESC LIMIT 5").fetchall())
-print(conn.execute("SELECT state, COUNT(*) FROM jobs WHERE state != '' GROUP BY state ORDER BY COUNT(*) DESC").fetchall())
 
-# Cleanup old jobs
-conn.execute("DELETE FROM jobs WHERE scraped_at < date('now', '-30 days')")
-conn.commit()
+# 各州职位分布
+print(conn.execute("SELECT state, COUNT(*) FROM jobs WHERE state != '' GROUP BY state ORDER BY COUNT(*) DESC").fetchall())
 ```
 
-## Quick Start
+## 快速开始
 
 ```bash
-# Install dependencies
+# 安装依赖
 pip install -r requirements.txt
 
-# ── One-command pipeline (recommended) ────────────────────────────
-python run_pipeline.py --step all    # Full pipeline: scrape → auto-migrate
+# ── 一键流水线（推荐）────────────────────────────────────────────
+python run_pipeline.py --step all    # 完整流程：爬取 → 自动迁移
 
-# ── Step-by-step ─────────────────────────────────────────────────
-python run_pipeline.py --step scrape  # Scrape jobs (requires Playwright MCP)
-python jd_fetch.py                   # Fill JDs via MCP webfetch (manual)
-python run_pipeline.py --step migrate  # Push JSON → SQLite + FTS
+# ── 分步骤执行 ─────────────────────────────────────────────────
+python run_pipeline.py --step scrape  # 爬取职位（需要 Playwright MCP）
+python jd_fetch.py                   # 通过 MCP webfetch 补充 JD（手动）
+python run_pipeline.py --step migrate  # JSON → SQLite + FTS
 
-# ── Query the database ───────────────────────────────────────────
+# ── 查询数据库 ────────────────────────────────────────────────
 python -c "
 import sqlite3
 conn = sqlite3.connect('data/jobs.db')
-print('Total:', conn.execute('SELECT COUNT(*) FROM jobs').fetchone()[0])
-print(conn.execute('SELECT company_name, COUNT(*) FROM jobs GROUP BY company_name ORDER BY COUNT(*) DESC LIMIT 5').fetchall())
+print('总职位数:', conn.execute('SELECT COUNT(*) FROM jobs').fetchone()[0])
+print('各公司职位数:', conn.execute('SELECT company_name, COUNT(*) FROM jobs GROUP BY company_name ORDER BY COUNT(*) DESC LIMIT 5').fetchall())
 "
 
-# ── Backfill dates for legacy data ───────────────────────────────
+# ── 回填日期 ──────────────────────────────────────────────────
 python backfill_dates.py --fallback
 ```
 
-## Data Schema (JSON legacy)
+## 数据格式（JSON legacy）
 
 ```json
 {
@@ -254,30 +200,17 @@ python backfill_dates.py --fallback
   "source": "linkedin",
   "job_type": "Internship",
   "posted_date": "1 week ago",
-  "description": "Full job description text..."
+  "description": "完整职位描述..."
 }
 ```
 
-## Key Findings (2026-03-25 Scraped Data)
+## 注意事项
 
-| Metric | Value |
-|--------|-------|
-| Total Jobs | 124 |
-| Companies | 29 unique |
-| Top Company | WSP in the U.S. (23 jobs) |
-| Top State | TX (19 jobs) |
-| Job Types | Internship (115), Co-op/Temporary (4), Full-time (4), Part-time (1) |
-| Date Range | 2026-02-25 → 2026-03-25 |
-| Past Week Jobs | 71 (2026-03-18 to 2026-03-25) |
-| DB Size | 720 KB (SQLite with FTS) |
-
-## Notes
-
-- **Use `run_pipeline.py`** as the main entry point. It handles the full pipeline.
-- LinkedIn requires an authenticated session. Run with Playwright MCP connected to a logged-in browser.
-- `f_TPR=r2592000` filters to jobs posted in the past 30 days.
-- `scrape_all_jobs.py` auto-migrates to SQLite on completion — no manual step needed after scraping.
-- After filling JDs via MCP webfetch, run `python jd_fetch.py --migrate` to push updates to SQLite.
-- If LinkedIn blocks direct JD access, use `webfetch` on the job URL — it bypasses JS rendering blocking.
-- SQLite is the primary storage. JSON is the portable exchange format fed into SQLite.
-- `backfill_dates.py --fallback` converts remaining relative dates to ISO using scrape date as reference.
+- **请使用 `run_pipeline.py`** 作为主入口，它负责完整流水线。
+- LinkedIn 需要已登录会话。请使用已登录 LinkedIn 的 Playwright MCP 连接。
+- `f_TPR=r2592000` 过滤为最近 30 天内发布的职位。
+- `scrape_all_jobs.py` 完成后自动迁移到 SQLite — 爬取后无需手动操作。
+- 通过 MCP webfetch 补充 JD 后，运行 `python jd_fetch.py --migrate` 推送到 SQLite。
+- 如 LinkedIn 阻止直接访问 JD，可对职位 URL 使用 `webfetch` — 可绕过 JS 渲染阻止。
+- SQLite 是主要存储。JSON 是导入 SQLite 用的可移植交换格式。
+- `backfill_dates.py --fallback` 将相对日期转换为 ISO 日期（以爬取日期为参考）。
