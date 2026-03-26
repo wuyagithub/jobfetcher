@@ -366,7 +366,7 @@ async def main():
     print("Deduplication: Enabled")
     print("=" * 60)
 
-    keywords = "civil engineering environmental engineering jobs internships"
+    keywords = "civil engineering and environmental engineering jobs in the United States"
     location = "United States"
 
     print("\n[Init] Loading existing scraped URLs...")

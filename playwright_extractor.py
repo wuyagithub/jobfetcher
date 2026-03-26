@@ -109,7 +109,7 @@ def parse_jobs_from_text(text: str) -> list[JobListing]:
 def save_to_json(jobs: list[JobListing], filepath: str):
     """Save jobs to JSON file."""
     data = {
-        "search_keywords": "civil engineering environmental engineering jobs internships",
+        "search_keywords": "civil engineering and environmental engineering jobs in the United States",
         "search_location": "United States",
         "source": "LinkedIn",
         "scraped_at": datetime.now().isoformat(),
@@ -183,7 +183,7 @@ if __name__ == "__main__":
     print("4. Save to JSON with save_to_json()")
     print("\nExample:")
     print(
-        '  browser_navigate(url="https://www.linkedin.com/jobs/search/?keywords=civil+engineering+intern&location=United+States")'
+        '  browser_navigate(url="https://www.linkedin.com/jobs/search/?keywords=civil+engineering+and+environmental+engineering+jobs+in+the+United+States&location=United+States")'
     )
     print("  browser_run_code(code=EXTRACTION_SCRIPT)")
     print('  python -c "parse_jobs_from_text(result_text)"')
