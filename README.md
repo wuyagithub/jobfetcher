@@ -214,3 +214,40 @@ python backfill_dates.py --fallback
 - 如 LinkedIn 阻止直接访问 JD，可对职位 URL 使用 `webfetch` — 可绕过 JS 渲染阻止。
 - SQLite 是主要存储。JSON 是导入 SQLite 用的可移植交换格式。
 - `backfill_dates.py --fallback` 将相对日期转换为 ISO 日期（以爬取日期为参考）。
+
+## 当前数据状态
+
+截至 2026-03-26，SQLite 数据库 (`data/jobs.db`) 包含：
+
+| 指标 | 数值 |
+|------|------|
+| 总职位数 | 3 |
+| 数据完整度 | 部分字段缺失 |
+
+### 字段完整度
+
+| 字段 | 完整率 | 说明 |
+|------|--------|------|
+| `job_title` | 100% | ✅ |
+| `company_name` | 0% | ⚠️ 待补充 |
+| `city` / `state` | 100% | ✅ 部分解析异常 |
+| `employment_type` | 100% | ✅ |
+| `description_text` | 66% | ⚠️ 部分职位有 JD |
+| `posted_date` | 0% | ⚠️ 待补充 |
+
+### 补充职位详情
+
+如需补充完整信息，运行：
+
+```bash
+# 继续 enrichment（会复用已有数据，逐步追加）
+python enrich_jobs.py
+
+# 指定数量测试
+python enrich_jobs.py 10
+```
+
+### 最新抓取数据
+
+- `scrape_linkedin_mcp.py` - 快速抓取职位链接（60 个唯一职位）
+- `enrich_jobs.py` - 补充公司、地点、描述、发布日期
