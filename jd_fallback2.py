@@ -171,7 +171,7 @@ def process_company(company_name, job_title, location):
 
 
 def main():
-    input_file = r"D:\opencode\jobfetcher\data\linkedin_jobs_20260325_new.json"
+    input_file = r"D:\opencode\jobfetcher\data\linkedin_jobs_20260326_new.json"
 
     with open(input_file, "r", encoding="utf-8") as f:
         jobs = json.load(f)
