@@ -3,6 +3,10 @@ data/*.db
 data/*.json
 data/*.csv
 
+# Generated outputs
+jobs.json
+jobs_table.html
+
 # Python
 __pycache__/
 *.py[cod]
