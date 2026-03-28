@@ -1,28 +1,27 @@
 """
-LinkedIn job scraper for Civil & Environmental Engineering internships.
+LinkedIn job scraper using opencli for data collection.
 
 Features:
-- Date filter: past month (f_TPR=r2592000)
+- Uses opencli linkedin search for job listings
 - Deduplication: skips already scraped jobs by URL
+- Output: JSON file compatible with migrate_to_sqlite.py
+- JD fetching handled separately by jd_fetch.py (via XCrawl)
 """
 
-import asyncio
+import argparse
 import json
+import re
+import subprocess
+import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Set
-from uuid import uuid4
-
-from playwright.async_api import async_playwright
 
 
 # ============================================================================
 # CONSTANTS
 # ============================================================================
-
-# Date filter: "past month" = 30 days in seconds
-# LinkedIn uses f_TPR parameter: r604800 (week), r2592000 (month), r7776000 (3 months)
-DATE_FILTER_MONTH = "r2592000"
 
 # Data directory
 DATA_DIR = Path("data")
@@ -36,6 +35,10 @@ FALLBACK_DEDUP_FILES = [
     "linkedin_jobs_full.json",
     "linkedin_jobs_page1.json",
 ]
+
+# Default search parameters
+DEFAULT_KEYWORDS = "civil engineer OR environmental engineer"
+DEFAULT_LOCATION = "United States"
 
 
 # ============================================================================
@@ -112,8 +115,6 @@ def normalize_url(url: str) -> str:
       - New: /jobs/view/intern-civil-site-engineering-at-gft-4380391939?position=1&...
     Using job ID eliminates false duplicates from tracking parameters.
     """
-    import re
-
     if not url:
         return ""
     # Extract job ID: handles both URL formats
@@ -151,205 +152,159 @@ def filter_out_scraped_jobs(jobs: List[Dict], scraped_urls: Set[str]) -> List[Di
 
 
 # ============================================================================
-# LINKEDIN SCRAPER
+# OPENCLI LINKEDIN SCRAPER
 # ============================================================================
 
 
-async def scrape_linkedin_page(page, url: str) -> List[Dict]:
-    """Scrape a single LinkedIn page for job listings."""
-    await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-    await page.wait_for_timeout(3000)
-
-    title = await page.title()
-    print(f"  Page: {title[:50]}...")
-
-    job_data = await page.evaluate("""() => {
-        const results = [];
-        const jobCards = document.querySelectorAll('.base-card');
-
-        jobCards.forEach(card => {
-            const titleEl = card.querySelector('h3.base-search-card__title');
-            const companyEl = card.querySelector('h4.base-search-card__subtitle');
-            const metaEl = card.querySelector('.base-search-card__metadata');
-            const linkEl = card.querySelector('a.base-card__full-link');
-
-            const title = titleEl ? titleEl.innerText.trim() : '';
-            const company = companyEl ? companyEl.innerText.trim() : '';
-            const location = metaEl ? metaEl.innerText.trim() : '';
-            const href = linkEl ? linkEl.href : '';
-
-            if (title && company) {
-                results.push({ title, company, location, url: href });
-            }
-        });
-
-        return results;
-    }""")
-
-    return job_data
-
-
-async def get_linkedin_job_details(page, job_url: str) -> dict:
-    """Get full job description AND real posting date from LinkedIn job detail page.
-
-    Returns:
-        dict with keys: description (str), posted_date (str ISO or '')
-    """
-    try:
-        await page.goto(job_url, wait_until="domcontentloaded", timeout=30000)
-        await page.wait_for_timeout(2000)
-
-        result = await page.evaluate("""() => {
-            // Extract description
-            const article = document.querySelector('article');
-            const description = article ? article.innerText : '';
-
-            // Extract datePosted from JSON-LD
-            let postedDate = '';
-            const scripts = document.querySelectorAll('script[type="application/ld+json"]');
-            for (const script of scripts) {
-                try {
-                    const data = JSON.parse(script.textContent);
-                    if (data['@type'] === 'JobPosting' && data.datePosted) {
-                        postedDate = data.datePosted;
-                        break;
-                    }
-                    if (data['@graph']) {
-                        for (const item of data['@graph']) {
-                            if (item['@type'] === 'JobPosting' && item.datePosted) {
-                                postedDate = item.datePosted;
-                                break;
-                            }
-                        }
-                    }
-                } catch (e) {}
-            }
-
-            // Fallback: parse "X days ago" from DOM
-            if (!postedDate) {
-                const dateEl = document.querySelector('.jobs-unified-top-card__posted-date');
-                if (dateEl) {
-                    postedDate = 'RELATIVE:' + dateEl.textContent.trim();
-                }
-            }
-
-            return {
-                description: description.slice(0, 8000),
-                postedDate
-            };
-        }""")
-
-        return {
-            "description": result.get("description", "") or "",
-            "posted_date": _parse_posted_date_result(result.get("postedDate", "")),
-        }
-    except Exception as e:
-        print(f"    Error getting job details: {e}")
-        return {"description": "", "posted_date": ""}
-
-
-def _parse_posted_date_result(posted_str: str) -> str:
-    """Convert LinkedIn date result to ISO date string or ''."""
-    if not posted_str:
-        return ""
-    if posted_str.startswith("RELATIVE:"):
-        # Parse "6 days ago" → ISO
-        import re
-        from datetime import datetime, timedelta
-
-        m = re.search(r"(\d+)?\s*(hour|day|week|month)s?\s*ago", posted_str, re.IGNORECASE)
-        if not m:
-            return ""
-        count_str, unit = m.group(1), m.group(2).lower()
-        count = int(count_str) if count_str else 1
-        today = datetime.now().replace(hour=0, minute=0, second=0)
-        delta_map = {"hour": 0, "day": count, "week": count * 7, "month": count * 30}
-        delta = delta_map.get(unit, 0)
-        return (today - timedelta(days=delta)).isoformat()
-    # Already ISO
-    if "T" in posted_str:
-        return posted_str[:19] + "00"
-    if re.match(r"\d{4}-\d{2}-\d{2}", posted_str):
-        return posted_str[:10] + "T00:00:00"
-    return ""
-
-
-async def scrape_linkedin_all(
+def call_opencli_linkedin_search(
     keywords: str,
     location: str,
-    max_pages: int = 10,
-    scraped_urls: Optional[Set[str]] = None,
+    max_results: int = 100,
+    date_posted: str = "week",
 ) -> List[Dict]:
-    """Scrape multiple LinkedIn pages.
+    """
+    Call opencli linkedin search and return job listings.
 
     Args:
         keywords: Job search keywords
         location: Location to search
-        max_pages: Maximum number of pages to scrape
+        max_results: Maximum number of results to return (max 100 per call)
+        date_posted: Filter by date posted (any, 24h, week, month)
+
+    Returns:
+        List of job dictionaries in migrate-compatible format
+    """
+    import platform
+
+    cmd = [
+        "opencli",
+        "linkedin",
+        "search",
+        keywords,
+        "--location",
+        location,
+        "--limit",
+        str(max_results),
+        "--date-posted",
+        date_posted,
+        "-f",
+        "json",
+    ]
+
+    print(f"  Running: {' '.join(cmd)}")
+
+    # On Windows, subprocess needs shell=True or .cmd extension
+    use_shell = platform.system() == "Windows"
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            encoding="utf-8",
+            errors="replace",
+            shell=use_shell,
+        )
+
+        if result.returncode != 0:
+            print(f"  opencli error: {result.stderr[:300]}")
+            return []
+
+        # Parse JSON output
+        output = result.stdout.strip()
+        if not output:
+            print("  opencli returned empty output")
+            return []
+
+        try:
+            jobs = json.loads(output)
+        except json.JSONDecodeError as e:
+            print(f"  JSON parse error: {e}, output: {output[:200]}")
+            return []
+
+        if not isinstance(jobs, list):
+            print(f"  Expected list, got {type(jobs)}")
+            return []
+
+        # Transform opencli format to migrate-compatible format
+        transformed = []
+        for job in jobs:
+            transformed_job = {
+                "url": job.get("url", ""),
+                "title": job.get("title", "").strip(),
+                "company": job.get("company", "").strip(),
+                "location": job.get("location", ""),
+                "job_type": "Full-time",  # opencli doesn't provide this
+                "posted_date": job.get("listed", ""),  # 'listed' -> 'posted_date'
+                "description": "",  # JDs fetched separately via XCrawl
+            }
+            transformed.append(transformed_job)
+
+        print(f"  Retrieved {len(transformed)} jobs from opencli")
+        return transformed
+
+    except subprocess.TimeoutExpired:
+        print("  opencli timed out")
+        return []
+    except Exception as e:
+        print(f"  Error calling opencli: {e}")
+        return []
+
+
+def scrape_linkedin_all(
+    keywords: str,
+    location: str,
+    max_results: int = 100,
+    scraped_urls: Optional[Set[str]] = None,
+) -> List[Dict]:
+    """
+    Scrape LinkedIn jobs using opencli.
+
+    Args:
+        keywords: Job search keywords
+        location: Location to search
+        max_results: Maximum number of results to return
         scraped_urls: Set of already scraped URLs for deduplication.
 
     Returns:
         List of new job listings (deduplicated)
     """
-    all_jobs = []
-
     if scraped_urls is None:
         scraped_urls = load_scraped_urls()
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=False, channel="chrome")
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-        )
-        page = await context.new_page()
+    print(f"\n### SCRAPING LINKEDIN VIA OPENCLI ###")
+    print(f"Keywords: {keywords}")
+    print(f"Location: {location}")
+    print(f"Max results: {max_results}")
 
-        encoded_keywords = keywords.replace(" ", "%20")
-        encoded_location = location.replace(" ", "%20")
-        base_url = (
-            f"https://www.linkedin.com/jobs/search/?keywords={encoded_keywords}"
-            f"&location={encoded_location}"
-            f"&f_TPR={DATE_FILTER_MONTH}"
-        )
+    # Call opencli to get job listings
+    all_jobs = call_opencli_linkedin_search(
+        keywords=keywords,
+        location=location,
+        max_results=max_results,
+        date_posted="week",  # Past week for fresh data
+    )
 
-        for page_num in range(max_pages):
-            start = page_num * 25
-            url = f"{base_url}&start={start}" if start > 0 else base_url
+    if not all_jobs:
+        print("  No jobs retrieved from opencli")
+        return []
 
-            print(f"\nScraping LinkedIn page {page_num + 1} (past month)...")
-            jobs = await scrape_linkedin_page(page, url)
+    # Filter out already scraped jobs
+    new_jobs = filter_out_scraped_jobs(all_jobs, scraped_urls)
+    print(f"  Found {len(all_jobs)} jobs, {len(new_jobs)} new")
 
-            if not jobs:
-                print(f"  No more jobs found on page {page_num + 1}")
-                break
+    if not new_jobs:
+        print("  All jobs already scraped")
+        return []
 
-            new_jobs = filter_out_scraped_jobs(jobs, scraped_urls)
-            print(f"  Found {len(jobs)} jobs, {len(new_jobs)} new")
+    # Mark as source=linkedin and add to scraped set
+    for job in new_jobs:
+        job["source"] = "linkedin"
+        normalized = normalize_url(job.get("url", ""))
+        scraped_urls.add(normalized)
 
-            if not new_jobs:
-                print(f"  All jobs on this page already scraped, stopping.")
-                break
-
-            for job in new_jobs:
-                job["source"] = "linkedin"
-                job["job_type"] = "Internship"
-                normalized = normalize_url(job.get("url", ""))
-                scraped_urls.add(normalized)
-
-            all_jobs.extend(new_jobs)
-
-            if page_num == 0 and new_jobs:
-                print(f"  Getting full JD and posting date for first job...")
-                first_job_url = new_jobs[0].get("url", "")
-                if first_job_url:
-                    details = await get_linkedin_job_details(page, first_job_url)
-                    new_jobs[0]["description"] = details.get("description", "")
-                    new_jobs[0]["posted_date"] = details.get("posted_date", "")
-                    print(f"  JD length: {len(details.get('description', ''))} chars")
-                    print(f"  Posted date: {details.get('posted_date', 'N/A')}")
-
-        await browser.close()
-
-    return all_jobs
+    return new_jobs
 
 
 # ============================================================================
@@ -357,28 +312,56 @@ async def scrape_linkedin_all(
 # ============================================================================
 
 
-async def main():
-    print("=" * 60)
-    print("LinkedIn Job Scraper")
-    print("Civil & Environmental Engineering Jobs & Internships")
-    print("=" * 60)
-    print("Date Filter: Past Month (f_TPR=r2592000)")
-    print("Deduplication: Enabled")
-    print("=" * 60)
+def main():
+    parser = argparse.ArgumentParser(description="LinkedIn Job Scraper via opencli")
+    parser.add_argument("--keywords", type=str, default=DEFAULT_KEYWORDS, help="Search keywords")
+    parser.add_argument("--location", type=str, default=DEFAULT_LOCATION, help="Search location")
+    parser.add_argument(
+        "--max-results", type=int, default=100, help="Max results per search (default: 100)"
+    )
+    parser.add_argument(
+        "--pages", type=int, default=1, help="Number of search iterations (default: 1)"
+    )
+    args = parser.parse_args()
 
-    keywords = "civil engineering and environmental engineering jobs in the United States"
-    location = "United States"
+    print("=" * 60)
+    print("LinkedIn Job Scraper (opencli-based)")
+    print("Civil & Environmental Engineering Jobs")
+    print("=" * 60)
+    print(f"Keywords: {args.keywords}")
+    print(f"Location: {args.location}")
+    print(f"Max results: {args.max_results}")
+    print(f"Iterations: {args.pages}")
+    print("=" * 60)
 
     print("\n[Init] Loading existing scraped URLs...")
     scraped_urls = load_scraped_urls()
 
-    print("\n### SCRAPING LINKEDIN ###")
-    linkedin_jobs = await scrape_linkedin_all(
-        keywords, location, max_pages=5, scraped_urls=scraped_urls
-    )
-    print(f"\nTotal NEW LinkedIn jobs scraped: {len(linkedin_jobs)}")
+    all_linkedin_jobs = []
+    for page in range(args.pages):
+        if args.pages > 1:
+            print(f"\n--- Iteration {page + 1}/{args.pages} ---")
 
-    if linkedin_jobs:
+        jobs = scrape_linkedin_all(
+            keywords=args.keywords,
+            location=args.location,
+            max_results=args.max_results,
+            scraped_urls=scraped_urls,
+        )
+        all_linkedin_jobs.extend(jobs)
+
+        # Delay between iterations
+        if page < args.pages - 1 and jobs:
+            delay = 5.0
+            print(f"  [Delay] Waiting {delay}s before next iteration...")
+            time.sleep(delay)
+
+    print(f"\n### SUMMARY ###")
+    print(f"Total NEW LinkedIn jobs: {len(all_linkedin_jobs)}")
+    print(f"Total URLs tracked: {len(scraped_urls)}")
+
+    # Save to JSON
+    if all_linkedin_jobs:
         existing_linkedin = []
         if OUTPUT_FILE.exists():
             try:
@@ -387,10 +370,10 @@ async def main():
             except json.JSONDecodeError:
                 existing_linkedin = []
 
-        # Deduplicate by job ID (normalize_url now returns job ID)
+        # Deduplicate by job ID
         existing_ids = {normalize_url(j.get("url", "")) for j in existing_linkedin}
         truly_new = [
-            j for j in linkedin_jobs if normalize_url(j.get("url", "")) not in existing_ids
+            j for j in all_linkedin_jobs if normalize_url(j.get("url", "")) not in existing_ids
         ]
         combined_linkedin = existing_linkedin + truly_new
 
@@ -398,23 +381,22 @@ async def main():
             json.dump(combined_linkedin, f, indent=2, ensure_ascii=False)
         print(
             f"  Saved {len(truly_new)} truly new jobs to {OUTPUT_FILE.name} "
-            f"(total: {len(combined_linkedin)}, dupes filtered: {len(linkedin_jobs) - len(truly_new)})"
+            f"(total: {len(combined_linkedin)}, dupes filtered: {len(all_linkedin_jobs) - len(truly_new)})"
         )
 
-    print(f"\n### SUMMARY ###")
-    print(f"Total NEW LinkedIn jobs: {len(linkedin_jobs)}")
-    print(f"Total URLs tracked: {len(scraped_urls)}")
-
-    # ── Auto-migrate to SQLite ──────────────────────────────────────────
-    if linkedin_jobs and _auto_migrate():
-        print("\n[SQLite] Migration complete.")
+        # ── Auto-migrate to SQLite ──────────────────────────────────────────
+        if _auto_migrate():
+            print("\n[SQLite] Migration complete.")
 
     print("\nData saved to data/ directory")
+    print("\nNext steps:")
+    print("  python jd_fetch.py --status   # Check JD status")
+    print("  python jd_fetch.py --fetch    # Fetch missing JDs via XCrawl")
 
 
 def _auto_migrate() -> bool:
     """Run migrate_to_sqlite.py as a subprocess. Returns True on success."""
-    import subprocess, sys
+    import subprocess as _subprocess
 
     migrate_script = Path(__file__).parent / "migrate_to_sqlite.py"
     if not migrate_script.exists():
@@ -422,8 +404,11 @@ def _auto_migrate() -> bool:
         return False
     try:
         print(f"\n[SQLite] Running auto-migration...")
-        result = subprocess.run(
-            [sys.executable, str(migrate_script)], capture_output=True, text=True, timeout=60
+        result = _subprocess.run(
+            [sys.executable, str(migrate_script)],
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
         if result.returncode == 0:
             # Print summary lines from migration
@@ -441,4 +426,4 @@ def _auto_migrate() -> bool:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

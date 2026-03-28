@@ -1,52 +1,111 @@
 # JobFetcher - LinkedIn 土木/环境工程职位爬虫
 
-使用 Playwright MCP（浏览器自动化 + 已登录会话）爬取 LinkedIn 上美国地区的土木工程和环境工程职位（包括全职和实习）。
+使用 **opencli** 爬取 LinkedIn 职位列表，**XCrawl** 获取职位详情（JD）。
 
-## 搜索配置
+## 项目概述
 
-- **搜索关键词**：`civil engineering and environmental engineering jobs in the United States`
-- **搜索地区**：United States
-- **时间过滤**：最近 30 天内发布的职位（`f_TPR=r2592000`）
+从 LinkedIn 爬取美国地区土木工程和环境工程职位，存储到 SQLite 数据库，支持全文搜索。
+
+- **搜索关键词**：`civil engineer OR environmental engineer`
+- **搜索地区**：`United States`
+- **时间过滤**：最近一周发布的职位
 
 ## 工作流程
 
 ```
-python run_pipeline.py --step all        # 完整流水线（推荐）
-python run_pipeline.py --step scrape     # 仅步骤 1：爬取
-python run_pipeline.py --step migrate    # 仅步骤 3：JSON → SQLite
-
-# --step all 内部流程：
 ┌─────────────────────────────────────────────────────────────────┐
-│  步骤 1：爬取职位 (scrape_all_jobs.py)                            │
-│  - 使用 Playwright MCP 访问 LinkedIn 搜索结果                    │
-│  - 搜索关键词："civil engineering and environmental engineering │
-│    jobs in the United States"，地区："United States"            │
-│  - 提取：职位名称、公司、地点、URL、发布日期                      │
-│    （从 JSON-LD datePosted 字段获取真实 ISO 日期）               │
-│  - 处理分页（最多 22 页，每页 25 个职位）                        │
-│  - 与 SQLite 数据库和当前 JSON 文件进行去重                      │
-│  - 输出：data/linkedin_jobs_YYYYMMDD_new.json                   │
-│  - ✅ 完成自动迁移到 SQLite                                      │
+│  步骤 1：scrape_all_jobs.py (opencli)                          │
+│  - opencli linkedin search 获取结构化职位列表                    │
+│  - 提取：url, title, company, location, listed date              │
+│  - 自动去重（基于 LinkedIn Job ID）                              │
+│  - 输出：data/linkedin_jobs_*.json                              │
 └─────────────────────────────────────────────────────────────────┘
-                               ↓
+                                  ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│  步骤 2：补充职位描述 (MCP webfetch — 手动或脚本)                │
-│  - 使用 webfetch 工具从 LinkedIn 职位 URL 获取描述文本          │
-│  - 解析 "Job Description" / "About the job" 部分                │
-│  - 在 "Seniority level"、"Similar jobs"、"Referrals" 处截断     │
-│  -原地更新 JSON 中的 description 字段                           │
-│  - 备选方案：jd_fallback.py / jd_fallback2.py                   │
-│  - 所有描述补充完成后：python jd_fetch.py --migrate            │
-└─────────────────────────────────────────────────────────────────┘
-                               ↓
-┌─────────────────────────────────────────────────────────────────┐
-│  步骤 3：迁移到 SQLite (migrate_to_sqlite.py)                    │
-│  - scrape_all_jobs.py 完成后自动运行                            │
-│  - 将扁平 JSON 转换为结构化 SQLite 模式                          │
-│  - 自动解析：城市/州、职位类型、薪资、日期                        │
+│  步骤 2：migrate_to_sqlite.py                                   │
+│  - JSON → 结构化 SQLite schema                                  │
+│  - 解析 location → city / state / location_type                 │
 │  - 创建 FTS5 全文搜索索引                                        │
-│  - 输出：data/jobs.db (SQLite)                                  │
+│  - 输出：data/jobs.db                                           │
 └─────────────────────────────────────────────────────────────────┘
+                                  ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  步骤 3：jd_fetch.py (XCrawl)                                   │
+│  - 读取 source_url 列表                                         │
+│  - XCrawl Scrape API 获取完整 JD（js_render + markdown）        │
+│  - extract_jd_from_markdown() 提取 JD 文本                      │
+│  - 更新 jobs.description_text 字段                              │
+│  - 重建 FTS5 索引                                               │
+└─────────────────────────────────────────────────────────────────┘
+                                  ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  步骤 4：gen_table.py                                           │
+│  - 从 jobs.db 读取所有职位                                       │
+│  - 排序：posted_date DESC + company_name ASC                    │
+│  - 输出：jobs_table.html（分页，含 JD 展开）                    │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+## 快速开始
+
+```bash
+cd D:/opencode/jobfetcher
+
+# 1. 配置 opencli（确保 Chrome 扩展已连接）
+opencli doctor
+
+# 2. 配置 XCrawl API Key（~/.xcrawl/config.json）
+#    {"XCRAWL_API_KEY": "your_key_here"}
+
+# 3. 查看数据库状态
+python jd_fetch.py --status
+
+# 4. 抓取职位列表（opencli）
+python scrape_all_jobs.py \
+  --keywords "civil engineer OR environmental engineer" \
+  --location "United States" \
+  --max-results 100
+
+# 5. 迁移到 SQLite（自动执行，也可单独运行）
+python migrate_to_sqlite.py
+
+# 6. 获取缺失的 JD（XCrawl）
+python jd_fetch.py --fetch
+
+# 7. 生成 HTML 报告
+python gen_table.py
+```
+
+## 推荐：一键运行
+
+```bash
+# 完整流水线（自动执行所有步骤）
+python run_pipeline.py --all --html
+```
+
+## 单独步骤
+
+```bash
+# 仅抓取职位列表
+python scrape_all_jobs.py --keywords "civil engineer OR environmental engineer" --location "United States" --max-results 100
+
+# 仅迁移 JSON → SQLite
+python migrate_to_sqlite.py
+
+# 查看 JD 状态
+python jd_fetch.py --status
+
+# 获取缺失 JD
+python jd_fetch.py --fetch
+
+# 重建 FTS5 索引
+python jd_fetch.py --rebuild-fts
+
+# 生成 HTML 报告
+python gen_table.py
+
+# 查看数据库统计
+python run_pipeline.py --check
 ```
 
 ## 文件结构
@@ -56,74 +115,53 @@ jobfetcher/
 ├── README.md                  # 本文件
 ├── requirements.txt           # Python 依赖
 ├── pyproject.toml            # 项目配置
-├── run_pipeline.py           # ✅ 主协调器（请使用此文件！）
-├── scrape_all_jobs.py        # 步骤 1：LinkedIn 爬虫 (Playwright MCP)
-├── jd_fetch.py               # 步骤 2：补充 JD + 自动迁移
-├── jd_fallback.py            # 步骤 2b：备选 JD 获取策略
-├── jd_fallback2.py           # 步骤 2b：额外备选策略
-├── backfill_dates.py         # 回填真实发布日期
-├── migrate_to_sqlite.py      # JSON → SQLite 迁移 + FTS（自动调用）
-├── playwright_extractor.py   # Playwright 浏览器工具
-├── hooks/                    # Git hooks
-│   └── post-commit           # 每次提交后自动推送到 GitHub
-├── src/                      # 原始 jobfetcher 包
-│   └── jobfetcher/
-│       ├── api/              # FastAPI REST API
-│       ├── cli/              # 命令行接口
-│       ├── models/           # 数据模型 (JobListing 等)
-│       ├── scrapers/         # 平台爬虫 (LinkedIn 等)
-│       └── storage/          # SQLite、JSON、CSV 后端
-└── data/
-    ├── jobs.db               # ✅ SQLite 数据库（持久化存储）
-    └── linkedin_jobs_*.json  # JSON 源（导入 SQLite 用）
+├── run_pipeline.py           # 流水线协调器
+├── scrape_all_jobs.py        # 步骤1：opencli 抓取
+├── migrate_to_sqlite.py      # 步骤2：JSON → SQLite
+├── jd_fetch.py               # 步骤3：JD 获取（XCrawl）
+├── xcrawl_client.py          # XCrawl API 封装
+├── gen_table.py              # 步骤4：生成 HTML
+├── backfill_dates.py         # 回填发布日期
+├── data/
+│   ├── jobs.db               # SQLite 数据库
+│   └── linkedin_jobs_*.json  # JSON 缓存
+└── jobs_table.html           # HTML 报告
 ```
 
-## SQLite 数据库结构
+## 数据库结构
+
+### 主表 jobs
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | TEXT | LinkedIn 完整 URL |
+| `source` | TEXT | 数据来源，默认 'linkedin' |
+| `source_url` | TEXT | 完整 LinkedIn URL |
+| `job_title` | TEXT | 职位名称 |
+| `company_name` | TEXT | 公司名称 |
+| `location_type` | TEXT | 'onsite' / 'remote' / 'hybrid' |
+| `city` | TEXT | 城市 |
+| `state` | TEXT | 州（2字母缩写） |
+| `country` | TEXT | 国家，默认 'US' |
+| `employment_type` | TEXT | 'INTERNSHIP' / 'FULL_TIME' 等 |
+| `salary_currency` | TEXT | 货币，如 'USD' |
+| `salary_min` | REAL | 最低薪资 |
+| `salary_max` | REAL | 最高薪资 |
+| `salary_interval` | TEXT | 'HOUR' / 'YEAR' 等 |
+| `description_text` | TEXT | 职位描述（纯文本） |
+| `posted_date` | TEXT | ISO 日期字符串 |
+| `scraped_at` | TEXT | 爬取时间 |
+
+### 全文搜索表 jobs_fts
 
 ```sql
--- 主表
-CREATE TABLE jobs (
-    id              TEXT PRIMARY KEY,
-    source          TEXT NOT NULL DEFAULT 'linkedin',
-    source_url      TEXT UNIQUE NOT NULL,
-    job_title       TEXT NOT NULL,
-    company_name    TEXT NOT NULL,
-    company_url     TEXT,
-    location_type   TEXT,         -- 'onsite', 'remote', 'hybrid'
-    city            TEXT,
-    state           TEXT,         -- 2字母州缩写，如 'TX'
-    country         TEXT DEFAULT 'US',
-    postal_code     TEXT,
-    employment_type TEXT,         -- 'INTERNSHIP', 'FULL_TIME' 等
-    salary_currency TEXT,
-    salary_min      REAL,
-    salary_max      REAL,
-    salary_interval TEXT,        -- 'HOUR', 'YEAR' 等
-    description_text TEXT,
-    description_html TEXT,
-    requirements_json TEXT,
-    posted_date     TEXT,         -- ISO 日期字符串
-    expiry_date     TEXT,
-    scraped_at      TEXT NOT NULL,
-    created_at      TEXT DEFAULT CURRENT_TIMESTAMP
-);
-
--- 索引
-CREATE INDEX idx_jobs_source      ON jobs(source);
-CREATE INDEX idx_jobs_title       ON jobs(job_title);
-CREATE INDEX idx_jobs_state        ON jobs(state);
-CREATE INDEX idx_jobs_company      ON jobs(company_name);
-CREATE INDEX idx_jobs_posted_date  ON jobs(posted_date);
-CREATE INDEX idx_jobs_employment   ON jobs(employment_type);
-
--- 全文搜索 (FTS5)
 CREATE VIRTUAL TABLE jobs_fts USING fts5(
     job_title, company_name, city, state, description_text,
     content='jobs', content_rowid='rowid'
 );
 ```
 
-## SQLite 使用示例
+## 数据库使用示例
 
 ```python
 import sqlite3
@@ -131,123 +169,138 @@ import sqlite3
 conn = sqlite3.connect("data/jobs.db")
 
 # 查看所有职位
-for row in conn.execute("SELECT COUNT(*) FROM jobs"):
-    print(f"总职位数: {row[0]}")
+count = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+print(f"总职位数: {count}")
 
-# 德克萨斯州的土木工程实习生
-for row in conn.execute("""
+# 德克萨斯州的土木工程实习
+rows = conn.execute("""
     SELECT job_title, company_name, city
     FROM jobs
     WHERE state = 'TX'
       AND employment_type = 'INTERNSHIP'
       AND (job_title LIKE '%civil%' OR job_title LIKE '%environmental%')
     ORDER BY company_name
-"""):
-    print(row)
+""").fetchall()
 
 # 全文搜索
-for row in conn.execute("""
-    SELECT job_title, company_name, city, snippet(jobs_fts, 4, '<b>', '</b>', '...', 20) as context
+rows = conn.execute("""
+    SELECT job_title, company_name, city,
+           snippet(jobs_fts, 4, '<b>', '</b>', '...', 20) as context
     FROM jobs_fts
     JOIN jobs ON jobs.rowid = jobs_fts.rowid
     WHERE jobs_fts MATCH 'storm water OR wastewater'
     LIMIT 10
-"""):
-    print(f"{row[0]} @ {row[1]} ({row[2]})")
-    print(f"  {row[3]}")
+""").fetchall()
 
-# 按公司统计职位数量
-print(conn.execute("SELECT company_name, COUNT(*) FROM jobs GROUP BY company_name ORDER BY COUNT(*) DESC LIMIT 5").fetchall())
+# 按公司统计
+top_companies = conn.execute("""
+    SELECT company_name, COUNT(*) as cnt
+    FROM jobs GROUP BY company_name
+    ORDER BY cnt DESC LIMIT 5
+""").fetchall()
 
 # 各州职位分布
-print(conn.execute("SELECT state, COUNT(*) FROM jobs WHERE state != '' GROUP BY state ORDER BY COUNT(*) DESC").fetchall())
+by_state = conn.execute("""
+    SELECT state, COUNT(*) as cnt
+    FROM jobs WHERE state != ''
+    GROUP BY state ORDER BY cnt DESC
+""").fetchall()
 ```
 
-## 快速开始
+## JD 获取（XCrawl）
+
+JD 获取使用 `xcrawl_client.py`，内部逻辑：
+
+```
+fetch_jd(url)
+  ├── wait_before_request()          # 随机延迟 1.5-3s 防限流
+  ├── scrape_url_with_fallback(url)  # sync → async 自动切换
+  │     └── XCrawl Scrape API       # js_render + markdown 输出
+  └── extract_jd_from_markdown()     # 从 markdown 提 JD 文本
+        ├── 匹配标记：Job Description / About the job / Responsibilities...
+        └── 截断：Similar jobs / Seniority level 等
+```
+
+### xcrawl_client.py 主要函数
+
+```python
+from xcrawl_client import fetch_jd, fetch_jd_batch
+
+# 单个 JD
+jd_text = fetch_jd("https://www.linkedin.com/jobs/view/123456789")
+
+# 批量 JD
+results = fetch_jd_batch(urls, stop_on_error=False)
+```
+
+## HTML 报告
+
+生成交互式分页表格 `jobs_table.html`：
+
+- 分页显示（每页 15 条）
+- 点击 JD 可展开/收起
+- 按发布日期倒序排列
 
 ```bash
-# 安装依赖
-pip install -r requirements.txt
-
-# ── 一键流水线（推荐）────────────────────────────────────────────
-python run_pipeline.py --step all    # 完整流程：爬取 → 自动迁移
-
-# ── 分步骤执行 ─────────────────────────────────────────────────
-python run_pipeline.py --step scrape  # 爬取职位（需要 Playwright MCP）
-python jd_fetch.py                   # 通过 MCP webfetch 补充 JD（手动）
-python run_pipeline.py --step migrate  # JSON → SQLite + FTS
-
-# ── 查询数据库 ────────────────────────────────────────────────
-python -c "
-import sqlite3
-conn = sqlite3.connect('data/jobs.db')
-print('总职位数:', conn.execute('SELECT COUNT(*) FROM jobs').fetchone()[0])
-print('各公司职位数:', conn.execute('SELECT company_name, COUNT(*) FROM jobs GROUP BY company_name ORDER BY COUNT(*) DESC LIMIT 5').fetchall())
-"
-
-# ── 回填日期 ──────────────────────────────────────────────────
-python backfill_dates.py --fallback
+# 重新生成
+python gen_table.py
 ```
 
-## 数据格式（JSON legacy）
+## 数据状态
 
-```json
-{
-  "title": "Civil Engineering Intern",
-  "company": "WSP in the U.S.",
-  "location": "Houston, TX (On-site)",
-  "url": "https://www.linkedin.com/jobs/view/4384037771",
-  "source": "linkedin",
-  "job_type": "Internship",
-  "posted_date": "1 week ago",
-  "description": "完整职位描述..."
-}
-```
-
-## 注意事项
-
-- **请使用 `run_pipeline.py`** 作为主入口，它负责完整流水线。
-- LinkedIn 需要已登录会话。请使用已登录 LinkedIn 的 Playwright MCP 连接。
-- `f_TPR=r2592000` 过滤为最近 30 天内发布的职位。
-- `scrape_all_jobs.py` 完成后自动迁移到 SQLite — 爬取后无需手动操作。
-- 通过 MCP webfetch 补充 JD 后，运行 `python jd_fetch.py --migrate` 推送到 SQLite。
-- 如 LinkedIn 阻止直接访问 JD，可对职位 URL 使用 `webfetch` — 可绕过 JS 渲染阻止。
-- SQLite 是主要存储。JSON 是导入 SQLite 用的可移植交换格式。
-- `backfill_dates.py --fallback` 将相对日期转换为 ISO 日期（以爬取日期为参考）。
-
-## 当前数据状态
-
-截至 2026-03-26，SQLite 数据库 (`data/jobs.db`) 包含：
+截至 2026-03-28：
 
 | 指标 | 数值 |
 |------|------|
-| 总职位数 | 3 |
-| 数据完整度 | 部分字段缺失 |
+| 总职位数 | 198 |
+| 有 JD | 198 (100%) |
+| FTS5 索引 | 198 |
 
-### 字段完整度
-
-| 字段 | 完整率 | 说明 |
-|------|--------|------|
-| `job_title` | 100% | ✅ |
-| `company_name` | 0% | ⚠️ 待补充 |
-| `city` / `state` | 100% | ✅ 部分解析异常 |
-| `employment_type` | 100% | ✅ |
-| `description_text` | 66% | ⚠️ 部分职位有 JD |
-| `posted_date` | 0% | ⚠️ 待补充 |
-
-### 补充职位详情
-
-如需补充完整信息，运行：
+## 定时任务
 
 ```bash
-# 继续 enrichment（会复用已有数据，逐步追加）
-python enrich_jobs.py
+# crontab -e
 
-# 指定数量测试
-python enrich_jobs.py 10
+# 每天早上 10 点：完整流水线
+0 10 * * * cd /home/user/jobfetcher && python run_pipeline.py --all --html >> logs/pipeline.log 2>&1
+
+# 每天早上 11 点：仅生成 HTML（数据已存在）
+0 11 * * * cd /home/user/jobfetcher && python gen_table.py >> logs/html.log 2>&1
 ```
 
-### 最新抓取数据
+## 架构说明
 
-- `scrape_linkedin_mcp.py` - 快速抓取职位链接（60 个唯一职位）
-- `enrich_jobs.py` - 补充公司、地点、描述、发布日期
+### 为什么 opencli 负责职位列表？
+
+| opencli | Playwright |
+|---------|------------|
+| 结构化 JSON 输出 | DOM 解析复杂 |
+| 无需 Cookie/登录 | 需要维护 Cookie |
+| 调用简单 | 浏览器管理复杂 |
+| 不易被封 | 易触发反爬 |
+
+### 为什么 XCrawl 负责 JD？
+
+| XCrawl | opencli |
+|--------|---------|
+| 支持 JS 渲染等待 | 适合列表不适合详情 |
+| markdown 格式统一 | 返回原始 HTML |
+| 异步 + 轮询 | 同步调用 |
+
+### 关键文件对应关系
+
+| 任务 | 工具/文件 |
+|------|-----------|
+| 职位列表 | opencli `linkedin search` |
+| 去重 | `normalize_url()` — 按 Job ID |
+| 数据转换 | `migrate_to_sqlite.py` |
+| JD 获取 | `xcrawl_client.py` |
+| JD 文本提取 | `extract_jd_from_markdown()` |
+| 全文搜索 | SQLite FTS5 |
+
+## 注意事项
+
+- **opencli** 需要 Chrome 扩展已连接，运行 `opencli doctor` 检查
+- **XCrawl** 需要配置 `~/.xcrawl/config.json`
+- SQLite 是主存储，JSON 是中间格式
+- 去重基于 LinkedIn Job ID，支持新旧两种 URL 格式

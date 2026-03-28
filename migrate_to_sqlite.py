@@ -14,7 +14,7 @@ from pathlib import Path
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-JSON_PATH = Path(__file__).parent / "data" / "linkedin_jobs_20260326_new.json"
+JSON_PATH = Path(__file__).parent / "data" / "linkedin_jobs_20260325_new.json"
 DB_PATH = Path(__file__).parent / "data" / "jobs.db"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
